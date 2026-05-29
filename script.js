@@ -1,4 +1,4 @@
-const AMZN_LAMBDA_URL = "https://g7b2iieznm5kqssthpy3howyfu0exxfm.lambda-url.us-east-1.on.aws/";
+const AMZN_LAMBDA_URL = "https://kzfna3kqvccowo5wycenk4ncze0lysgv.lambda-url.ap-south-1.on.aws/";
 console.log('[App] script loaded with lambda url:', AMZN_LAMBDA_URL);
 
 const dashboardData = {
@@ -50,9 +50,10 @@ function buildCloudUrl(type, fallbackPath) {
 }
 
 async function sendCloudRequest(type, method, body, fallbackPath) {
-  const baseUrl = AMZN_LAMBDA_URL.replace(/\/+$/, '');
-  const fallbackUrl = `${baseUrl}/${String(fallbackPath || '').replace(/^\/+/, '')}`;
-  const urls = [`${baseUrl}?type=${type}`, fallbackUrl];
+  const urls = [
+    `${AMZN_LAMBDA_URL}?type=${type}`,
+    `${AMZN_LAMBDA_URL}${fallbackPath}`
+  ];
 
   let lastError;
 
@@ -114,15 +115,12 @@ async function createUserInCloud(user) {
 }
 
 async function updateUserInCloud(userId, updates) {
-  const localUser = findUserById(userId) || {};
-  const payload = { action: 'updateUser', userId, email: localUser.email, updates };
-  console.log('[Auth] updateUserInCloud payload:', payload);
-  const responseBody = await sendCloudRequest('users', 'POST', payload, CLOUD_USER_PATH);
+  const responseBody = await sendCloudRequest('users', 'POST', { action: 'updateUser', userId, updates }, CLOUD_USER_PATH);
   return normalizeStoredUser(responseBody);
 }
 
 function normalizeStoredUser(user) {
-  if (!user || !user.id || !user.email) {
+  if (!user || !user.id || !user.email || !user.password) {
     return null;
   }
 
@@ -130,7 +128,7 @@ function normalizeStoredUser(user) {
     id: String(user.id),
     name: String(user.name || user.email).trim(),
     email: normalizeEmail(String(user.email)),
-    password: String(user.password || ''),
+    password: String(user.password),
     role: user.role === 'Admin' ? 'Admin' : 'Staff',
     active: user.active !== false,
     createdAt: user.createdAt || new Date().toISOString(),
@@ -497,6 +495,110 @@ function isSeedStaffAccount(user) {
   );
 }
 
+function normalizeStoredUser(user) {
+  if (!user || !user.id || !user.email || !user.password) {
+    return null;
+  }
+
+  return {
+    id: String(user.id),
+    name: String(user.name || user.email).trim(),
+    email: normalizeEmail(String(user.email)),
+    password: String(user.password),
+    role: user.role === 'Admin' ? 'Admin' : 'Staff',
+    active: user.active !== false,
+    createdAt: user.createdAt || new Date().toISOString(),
+    createdBy: user.createdBy || 'System',
+    lastLoginAt: user.lastLoginAt || ''
+  };
+}
+
+function persistUsers() {
+  try {
+    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(appUsers));
+  } catch (_error) {
+    // Local storage may be unavailable; keep the in-memory state working.
+  }
+}
+
+function initializeUserStore() {
+  const fallbackUsers = [getSeedAdminUser(), getSeedStaffUser()];
+
+  try {
+    const rawUsers = localStorage.getItem(USER_STORAGE_KEY);
+    if (!rawUsers) {
+      appUsers = fallbackUsers;
+      persistUsers();
+      return;
+    }
+
+    const parsedUsers = JSON.parse(rawUsers);
+    const normalizedUsers = Array.isArray(parsedUsers)
+      ? parsedUsers.map(normalizeStoredUser).filter(Boolean)
+      : [];
+
+    if (normalizedUsers.length === 0) {
+      appUsers = fallbackUsers;
+      persistUsers();
+      return;
+    }
+
+    const hasActiveAdmin = normalizedUsers.some((user) => user.role === 'Admin' && user.active);
+    if (!hasActiveAdmin) {
+      const existingSeedAdmin = normalizedUsers.find((user) => isSeedAdminAccount(user));
+      if (existingSeedAdmin) {
+        existingSeedAdmin.role = 'Admin';
+        existingSeedAdmin.active = true;
+      } else {
+        normalizedUsers.unshift(getSeedAdminUser());
+      }
+    }
+
+    const hasStaffSeed = normalizedUsers.some((user) => isSeedStaffAccount(user));
+    if (!hasStaffSeed) {
+      normalizedUsers.push(getSeedStaffUser());
+    }
+
+    normalizedUsers.forEach((user) => {
+      if (isSeedAdminAccount(user)) {
+        user.id = seedAdminUser.id;
+        user.name = seedAdminUser.name;
+        user.email = seedAdminUser.email;
+        user.password = seedAdminUser.password;
+        user.role = 'Admin';
+        user.active = true;
+        user.createdBy = 'System';
+        user.createdAt = user.createdAt || seedAdminUser.createdAt;
+      }
+
+      if (isSeedStaffAccount(user)) {
+        user.id = seedStaffUser.id;
+        user.name = seedStaffUser.name;
+        user.email = seedStaffUser.email;
+        user.password = seedStaffUser.password;
+        user.role = 'Staff';
+        user.active = true;
+        user.createdBy = 'System';
+        user.createdAt = user.createdAt || seedStaffUser.createdAt;
+      }
+    });
+
+    const seenEmails = new Set();
+    appUsers = normalizedUsers.filter((user) => {
+      const normalizedEmail = normalizeEmail(user.email);
+      if (seenEmails.has(normalizedEmail)) {
+        return false;
+      }
+
+      seenEmails.add(normalizedEmail);
+      return true;
+    });
+    persistUsers();
+  } catch (_error) {
+    appUsers = fallbackUsers;
+    persistUsers();
+  }
+}
 
 function generateUserId() {
   return `user_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -920,29 +1022,14 @@ if (managedUsersBody) {
       }
     }
 
-    const newStatus = !targetUser.active;
-    const actionLabel = newStatus ? 'activate' : 'disable';
-    console.log('[Auth] Toggling user active status:', targetUser.id, actionLabel);
-
-    updateUserInCloud(targetUser.id, { active: newStatus })
-      .then((cloudUser) => {
-        const updatedUser = updateStoredUser(targetUser.id, {
-          active: newStatus,
-          lastLoginAt: cloudUser?.lastLoginAt || targetUser.lastLoginAt
-        });
-        renderAdminPage();
-        showUserManagementMessage(
-          updatedUser.active ? 'success' : 'secondary',
-          `${updatedUser.name} is now ${updatedUser.active ? 'active' : 'disabled'}.`
-        );
-      })
-      .catch((error) => {
-        console.error('[Auth] Failed to persist user active toggle to cloud:', error);
-        showUserManagementMessage(
-          'danger',
-          'Unable to update account status in the database. Try again later.'
-        );
-      });
+    const updatedUser = updateStoredUser(targetUser.id, {
+      active: !targetUser.active
+    });
+    renderAdminPage();
+    showUserManagementMessage(
+      updatedUser.active ? 'success' : 'secondary',
+      `${updatedUser.name} is now ${updatedUser.active ? 'active' : 'disabled'}.`
+    );
   });
 }
 [adminNameInput, adminEmailInput, adminPasswordInput].forEach((input) => {
