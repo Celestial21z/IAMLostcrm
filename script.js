@@ -50,10 +50,9 @@ function buildCloudUrl(type, fallbackPath) {
 }
 
 async function sendCloudRequest(type, method, body, fallbackPath) {
-  const urls = [
-    `${AMZN_LAMBDA_URL}?type=${type}`,
-    `${AMZN_LAMBDA_URL}${fallbackPath}`
-  ];
+  const baseUrl = AMZN_LAMBDA_URL.replace(/\/+$/, '');
+  const fallbackUrl = `${baseUrl}/${String(fallbackPath || '').replace(/^\/+/, '')}`;
+  const urls = [`${baseUrl}?type=${type}`, fallbackUrl];
 
   let lastError;
 
