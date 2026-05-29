@@ -1,4 +1,5 @@
 const AMZN_LAMBDA_URL = "https://g7b2iieznm5kqssthpy3howyfu0exxfm.lambda-url.us-east-1.on.aws/";
+console.log('[App] script loaded with lambda url:', AMZN_LAMBDA_URL);
 
 const dashboardData = {
   appointments: [],
@@ -41,96 +42,80 @@ let serviceChart;
 let appUsers = [];
 let currentSession = null;
 
+const CLOUD_USER_PATH = '/users';
+const CLOUD_APPOINTMENT_PATH = '/appointments';
+
+function buildCloudUrl(type, fallbackPath) {
+  return `${AMZN_LAMBDA_URL}?type=${type}`;
+}
+
+async function sendCloudRequest(type, method, body, fallbackPath) {
+  const urls = [
+    `${AMZN_LAMBDA_URL}?type=${type}`,
+    `${AMZN_LAMBDA_URL}${fallbackPath}`
+  ];
+
+  let lastError;
+
+  for (const url of urls) {
+    console.log(`[Cloud] Request ${method} ${url}`, body || 'no body');
+
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined
+      });
+
+      console.log(`[Cloud] Response status ${response.status} for ${url}`);
+
+      let responseBody;
+      try {
+        responseBody = await response.json();
+        console.log(`[Cloud] Response JSON for ${url}:`, responseBody);
+      } catch (err) {
+        console.error(`[Cloud] Failed to parse JSON from ${url}:`, err);
+        throw err;
+      }
+
+      if (!response.ok) {
+        lastError = new Error(responseBody?.message || `Request failed with status ${response.status}`);
+        if (response.status === 404) {
+          console.warn(`[Cloud] Falling back from ${url} to next endpoint`);
+          continue;
+        }
+        throw lastError;
+      }
+
+      return responseBody;
+    } catch (error) {
+      console.warn(`[Cloud] Request failed for ${url}:`, error);
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('Cloud request failed for all fallback endpoints.');
+}
+
 async function fetchUsersFromCloud() {
-  const url = `${AMZN_LAMBDA_URL}?type=users`;
-  console.log('[Auth] Fetching users from cloud:', url);
-
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' }
-  });
-
-  console.log('[Auth] Users fetch response status:', response.status);
-
-  let payload;
-  try {
-    payload = await response.json();
-    console.log('[Auth] Users fetch response JSON:', payload);
-  } catch (error) {
-    console.error('[Auth] Failed to parse users fetch response JSON:', error);
-    throw error;
-  }
-
-  if (!response.ok) {
-    throw new Error(payload?.message || 'Unable to fetch users from cloud.');
-  }
-
+  const payload = await sendCloudRequest('users', 'GET', null, CLOUD_USER_PATH);
   if (Array.isArray(payload)) {
     return payload;
   }
-
   if (payload && Array.isArray(payload.users)) {
     return payload.users;
   }
-
   console.warn('[Auth] Unexpected users response shape; returning empty array.');
   return [];
 }
 
 async function createUserInCloud(user) {
-  const url = `${AMZN_LAMBDA_URL}?type=users`;
-  console.log('[Auth] Creating user in cloud:', url, user);
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(user)
-  });
-
-  console.log('[Auth] Create user response status:', response.status);
-
-  let responseBody;
-  try {
-    responseBody = await response.json();
-    console.log('[Auth] Create user response JSON:', responseBody);
-  } catch (error) {
-    console.error('[Auth] Failed to parse create user response JSON:', error);
-    throw error;
-  }
-
-  if (!response.ok) {
-    throw new Error(responseBody?.message || 'Unable to create user in cloud.');
-  }
-
+  const responseBody = await sendCloudRequest('users', 'POST', user, CLOUD_USER_PATH);
   return normalizeStoredUser(responseBody) || normalizeStoredUser(user);
 }
 
 async function updateUserInCloud(userId, updates) {
-  const url = `${AMZN_LAMBDA_URL}?type=users`;
-  const payload = { action: 'updateUser', userId, updates };
-  console.log('[Auth] Updating user in cloud:', url, payload);
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  console.log('[Auth] Update user response status:', response.status);
-
-  let responseBody;
-  try {
-    responseBody = await response.json();
-    console.log('[Auth] Update user response JSON:', responseBody);
-  } catch (error) {
-    console.error('[Auth] Failed to parse update user response JSON:', error);
-    throw error;
-  }
-
-  if (!response.ok) {
-    throw new Error(responseBody?.message || 'Unable to update user in cloud.');
-  }
-
+  const responseBody = await sendCloudRequest('users', 'POST', { action: 'updateUser', userId, updates }, CLOUD_USER_PATH);
   return normalizeStoredUser(responseBody);
 }
 
@@ -794,23 +779,8 @@ function showLoginView() {
 }
 
 async function fetchAppointmentsFromCloud() {
-  const url = `${AMZN_LAMBDA_URL}?type=appointments`;
-  console.log('[Data] Fetching appointments from cloud:', url);
-
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' }
-  });
-
-  console.log('[Data] Appointments fetch response status:', response.status);
-  const json = await response.json();
-  console.log('[Data] Appointments fetch response JSON:', json);
-
-  if (!response.ok) {
-    throw new Error(json?.message || 'Unable to load appointments from cloud.');
-  }
-
-  return Array.isArray(json) ? json : json?.items || json?.appointments || [];
+  const payload = await sendCloudRequest('appointments', 'GET', null, CLOUD_APPOINTMENT_PATH);
+  return Array.isArray(payload) ? payload : payload?.items || payload?.appointments || [];
 }
 
 function showAppView(session) {
@@ -932,7 +902,9 @@ if (togglePasswordBtn) {
   });
 }
 if (loginForm) {
+  console.log('[Auth] loginForm bound');
   loginForm.addEventListener('submit', async (event) => {
+    console.log('[Auth] loginForm submit fired');
     event.preventDefault();
     hideLoginError();
 
@@ -968,8 +940,9 @@ if (logoutBtn) {
   });
 });
 if (userManagementForm) {
-  userManagementForm.addEventListener('submit', (event) => {
-    console.log("SUBMIT FIRED");
+  console.log('[Auth] userManagementForm bound');
+  userManagementForm.addEventListener('submit', async (event) => {
+    console.log('[Auth] userManagementForm submit fired');
     event.preventDefault();
     hideUserManagementMessage();
 
