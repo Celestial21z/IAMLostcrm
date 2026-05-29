@@ -1022,14 +1022,29 @@ if (managedUsersBody) {
       }
     }
 
-    const updatedUser = updateStoredUser(targetUser.id, {
-      active: !targetUser.active
-    });
-    renderAdminPage();
-    showUserManagementMessage(
-      updatedUser.active ? 'success' : 'secondary',
-      `${updatedUser.name} is now ${updatedUser.active ? 'active' : 'disabled'}.`
-    );
+    const newStatus = !targetUser.active;
+    const actionLabel = newStatus ? 'activate' : 'disable';
+    console.log('[Auth] Toggling user active status:', targetUser.id, actionLabel);
+
+    updateUserInCloud(targetUser.id, { active: newStatus })
+      .then((cloudUser) => {
+        const updatedUser = updateStoredUser(targetUser.id, {
+          active: newStatus,
+          lastLoginAt: cloudUser?.lastLoginAt || targetUser.lastLoginAt
+        });
+        renderAdminPage();
+        showUserManagementMessage(
+          updatedUser.active ? 'success' : 'secondary',
+          `${updatedUser.name} is now ${updatedUser.active ? 'active' : 'disabled'}.`
+        );
+      })
+      .catch((error) => {
+        console.error('[Auth] Failed to persist user active toggle to cloud:', error);
+        showUserManagementMessage(
+          'danger',
+          'Unable to update account status in the database. Try again later.'
+        );
+      });
   });
 }
 [adminNameInput, adminEmailInput, adminPasswordInput].forEach((input) => {
