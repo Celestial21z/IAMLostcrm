@@ -13,7 +13,6 @@ const dashboardData = {
 };
 
 const AUTH_STORAGE_KEY = 'iamlostcrm_session';
-const USER_STORAGE_KEY = 'iamlostcrm_users';
 const seedAdminUser = {
   id: 'user_admin_root',
   email: 'admin@iamlostcrm.com',
@@ -41,6 +40,174 @@ let revenueChart;
 let serviceChart;
 let appUsers = [];
 let currentSession = null;
+
+async function fetchUsersFromCloud() {
+  const url = `${AMZN_LAMBDA_URL}?type=users`;
+  console.log('[Auth] Fetching users from cloud:', url);
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  console.log('[Auth] Users fetch response status:', response.status);
+
+  let payload;
+  try {
+    payload = await response.json();
+    console.log('[Auth] Users fetch response JSON:', payload);
+  } catch (error) {
+    console.error('[Auth] Failed to parse users fetch response JSON:', error);
+    throw error;
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.message || 'Unable to fetch users from cloud.');
+  }
+
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (payload && Array.isArray(payload.users)) {
+    return payload.users;
+  }
+
+  console.warn('[Auth] Unexpected users response shape; returning empty array.');
+  return [];
+}
+
+async function createUserInCloud(user) {
+  const url = `${AMZN_LAMBDA_URL}?type=users`;
+  console.log('[Auth] Creating user in cloud:', url, user);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(user)
+  });
+
+  console.log('[Auth] Create user response status:', response.status);
+
+  let responseBody;
+  try {
+    responseBody = await response.json();
+    console.log('[Auth] Create user response JSON:', responseBody);
+  } catch (error) {
+    console.error('[Auth] Failed to parse create user response JSON:', error);
+    throw error;
+  }
+
+  if (!response.ok) {
+    throw new Error(responseBody?.message || 'Unable to create user in cloud.');
+  }
+
+  return normalizeStoredUser(responseBody) || normalizeStoredUser(user);
+}
+
+async function updateUserInCloud(userId, updates) {
+  const url = `${AMZN_LAMBDA_URL}?type=users`;
+  const payload = { action: 'updateUser', userId, updates };
+  console.log('[Auth] Updating user in cloud:', url, payload);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  console.log('[Auth] Update user response status:', response.status);
+
+  let responseBody;
+  try {
+    responseBody = await response.json();
+    console.log('[Auth] Update user response JSON:', responseBody);
+  } catch (error) {
+    console.error('[Auth] Failed to parse update user response JSON:', error);
+    throw error;
+  }
+
+  if (!response.ok) {
+    throw new Error(responseBody?.message || 'Unable to update user in cloud.');
+  }
+
+  return normalizeStoredUser(responseBody);
+}
+
+function normalizeStoredUser(user) {
+  if (!user || !user.id || !user.email || !user.password) {
+    return null;
+  }
+
+  return {
+    id: String(user.id),
+    name: String(user.name || user.email).trim(),
+    email: normalizeEmail(String(user.email)),
+    password: String(user.password),
+    role: user.role === 'Admin' ? 'Admin' : 'Staff',
+    active: user.active !== false,
+    createdAt: user.createdAt || new Date().toISOString(),
+    createdBy: user.createdBy || 'System',
+    lastLoginAt: user.lastLoginAt || ''
+  };
+}
+
+function persistUsers() {
+  // Local user persistence has been migrated to DynamoDB.
+  // This function remains here as a no-op for compatibility.
+}
+
+async function initializeUserStore() {
+  const fallbackUsers = [getSeedAdminUser(), getSeedStaffUser()];
+
+  try {
+    const fetchedUsers = await fetchUsersFromCloud();
+    let normalizedUsers = Array.isArray(fetchedUsers)
+      ? fetchedUsers.map(normalizeStoredUser).filter(Boolean)
+      : [];
+
+    const hasSeedAdmin = normalizedUsers.some(isSeedAdminAccount);
+    const hasSeedStaff = normalizedUsers.some(isSeedStaffAccount);
+
+    if (normalizedUsers.length === 0) {
+      console.warn('[Auth] No users found in DynamoDB; provisioning default admin and staff users.');
+      const createdAdmin = await createUserInCloud(getSeedAdminUser());
+      const createdStaff = await createUserInCloud(getSeedStaffUser());
+      normalizedUsers = [normalizeStoredUser(createdAdmin), normalizeStoredUser(createdStaff)].filter(Boolean);
+    } else {
+      const seedPromises = [];
+      if (!hasSeedAdmin) {
+        console.warn('[Auth] Seed admin account missing in DynamoDB; creating fallback admin user.');
+        seedPromises.push(createUserInCloud(getSeedAdminUser()));
+      }
+      if (!hasSeedStaff) {
+        console.warn('[Auth] Seed staff account missing in DynamoDB; creating fallback staff user.');
+        seedPromises.push(createUserInCloud(getSeedStaffUser()));
+      }
+      if (seedPromises.length > 0) {
+        const seededUsers = await Promise.all(seedPromises);
+        normalizedUsers = normalizedUsers.concat(seededUsers.map(normalizeStoredUser).filter(Boolean));
+      }
+    }
+
+    const seenEmails = new Set();
+    appUsers = normalizedUsers.filter((user) => {
+      const normalizedEmail = normalizeEmail(user.email);
+      if (seenEmails.has(normalizedEmail)) {
+        return false;
+      }
+      seenEmails.add(normalizedEmail);
+      return true;
+    });
+  } catch (error) {
+    console.error('[Auth] Unable to load users from DynamoDB. Falling back to seeded admin and staff in memory only.', error);
+    appUsers = fallbackUsers;
+  }
+}
+
+function generateUserId() {
+  return `user_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
 
 const YEAR_START = 1990;
 const currentYear = new Date().getFullYear();
@@ -626,6 +793,26 @@ function showLoginView() {
   setPasswordVisibility(false);
 }
 
+async function fetchAppointmentsFromCloud() {
+  const url = `${AMZN_LAMBDA_URL}?type=appointments`;
+  console.log('[Data] Fetching appointments from cloud:', url);
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  console.log('[Data] Appointments fetch response status:', response.status);
+  const json = await response.json();
+  console.log('[Data] Appointments fetch response JSON:', json);
+
+  if (!response.ok) {
+    throw new Error(json?.message || 'Unable to load appointments from cloud.');
+  }
+
+  return Array.isArray(json) ? json : json?.items || json?.appointments || [];
+}
+
 function showAppView(session) {
   currentSession = session;
   _setSessionUser(session);
@@ -634,16 +821,12 @@ function showAppView(session) {
   crmAppShell.classList.remove('d-none');
   initializeCharts();
 
-  fetch(AMZN_LAMBDA_URL)
-    .then(response => {
-      if (!response.ok) throw new Error('Database read failed.');
-      return response.json();
-    })
-    .then(data => {
+  fetchAppointmentsFromCloud()
+    .then((data) => {
       dashboardData.appointments = data || [];
     })
-    .catch(error => {
-      console.error('Data pull failed, showing local fallback context:', error);
+    .catch((error) => {
+      console.error('[Data] Appointments pull failed, showing local fallback context:', error);
       dashboardData.appointments = [];
     })
     .finally(() => {
@@ -652,10 +835,20 @@ function showAppView(session) {
     });
 }
 
-function completeLogin(user) {
-  const refreshedUser = updateStoredUser(user.id, {
-    lastLoginAt: new Date().toISOString()
-  });
+async function completeLogin(user) {
+  const lastLoginAt = new Date().toISOString();
+  let refreshedUser = user;
+
+  try {
+    const cloudUser = await updateUserInCloud(user.id, { lastLoginAt });
+    if (cloudUser) {
+      refreshedUser = cloudUser;
+    }
+  } catch (error) {
+    console.warn('[Auth] Failed to update last login in cloud, keeping local login state:', error);
+  }
+
+  updateStoredUser(user.id, { lastLoginAt });
   const session = buildSessionFromUser(refreshedUser);
 
   storeSession(session);
@@ -739,7 +932,7 @@ if (togglePasswordBtn) {
   });
 }
 if (loginForm) {
-  loginForm.addEventListener('submit', (event) => {
+  loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     hideLoginError();
 
@@ -754,7 +947,12 @@ if (loginForm) {
       return;
     }
 
-    completeLogin(user);
+    try {
+      await completeLogin(user);
+    } catch (error) {
+      console.error('[Auth] Login failed during cloud sync:', error);
+      showLoginError('Unable to sign in at this time. Please try again later.');
+    }
   });
 }
 if (logoutBtn) {
@@ -787,7 +985,6 @@ if (userManagementForm) {
     }
 
     const payload = {
-      action: 'createUser',
       id: generateUserId(),
       name: adminNameInput.value.trim(),
       email: normalizedEmail,
@@ -801,45 +998,30 @@ if (userManagementForm) {
 
     const submitBtn = userManagementForm.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
-  
-  console.log("ABOUT TO FETCH USERS");
-  
-  fetch(`${AMZN_LAMBDA_URL}users`, {  
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  })
-  
-  .then(response => {
-    if (!response.ok) throw new Error('Cloud persistence operation rejected.');
-    return response.json();
-})
-  .then(persistedUser => {
-  appUsers.unshift(persistedUser);
-  persistUsers();
-  renderAdminPage();
 
-  const createdRole = adminRoleSelect.value === 'Admin' ? 'admin' : 'staff';
-  showUserManagementMessage(
-    'success',
-    `Created ${createdRole} account for ${adminNameInput.value.trim()}.`
-  );
+    try {
+      const persistedUser = await createUserInCloud(payload);
+      appUsers.unshift(persistedUser);
+      renderAdminPage();
 
-  userManagementForm.reset();
-  userManagementForm.classList.remove('was-validated');
-  adminRoleSelect.value = 'Staff';
-})
-
-    .catch(err => {
-      console.error('Cloud Synchronization Error:', err);
+      const createdRole = adminRoleSelect.value === 'Admin' ? 'admin' : 'staff';
       showUserManagementMessage(
-      'danger',
-      'Database connection offline. Account could not be provisioned.'
-  );
-})
-    .finally(() => {
+        'success',
+        `Created ${createdRole} account for ${adminNameInput.value.trim()}.`
+      );
+
+      userManagementForm.reset();
+      userManagementForm.classList.remove('was-validated');
+      adminRoleSelect.value = 'Staff';
+    } catch (err) {
+      console.error('[Auth] Cloud Synchronization Error:', err);
+      showUserManagementMessage(
+        'danger',
+        'Database connection offline or account could not be provisioned.'
+      );
+    } finally {
       if (submitBtn) submitBtn.disabled = false;
-    });
+    }
   });
 }
 if (managedUsersBody) {
@@ -1654,16 +1836,20 @@ newAppointmentForm.addEventListener('submit', (event) => {
   const submitBtn = newAppointmentForm.querySelector('button[type="submit"]');
   if (submitBtn) submitBtn.disabled = true;
 
-  fetch(`${AMZN_LAMBDA_URL}appointments`, {
+  const appointmentUrl = `${AMZN_LAMBDA_URL}?type=appointments`;
+  console.log('[Data] Creating appointment:', appointmentUrl, payload);
+
+  fetch(appointmentUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
   .then(response => {
+    console.log('[Data] Appointment save response status:', response.status);
     if (!response.ok) throw new Error('Failed to save to database.');
     return response.json();
   })
-  .then(persistedItem => {
+  .then((persistedItem) => {
     dashboardData.appointments.unshift(persistedItem);
     renderAll();
     newAppointmentForm.reset();
@@ -1702,9 +1888,9 @@ modalElement.addEventListener('hidden.bs.modal', () => {
   newAppointmentForm.classList.remove('was-validated');
 });
 
-function bootApp() {
+async function bootApp() {
   initializeVehicleSelectors();
-  initializeUserStore();
+  await initializeUserStore();
 
   const storedSession = getStoredSession();
   if (storedSession) {
@@ -1716,4 +1902,8 @@ function bootApp() {
   loginEmailInput.focus();
 }
 
-bootApp();
+bootApp().catch((error) => {
+  console.error('[Boot] Failed to initialize application:', error);
+  showLoginView();
+  loginEmailInput.focus();
+});

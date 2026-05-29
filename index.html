@@ -64,7 +64,7 @@
                 </div>
               </div>
 
-              <p class="small text-secondary mt-4 mb-0">Admins can create staff and additional admin accounts from the Admin page. Accounts are stored locally in this browser.</p>
+              <p class="small text-secondary mt-4 mb-0">Admins can create staff and additional admin accounts from the Admin page. Accounts are synced through DynamoDB via Lambda.</p>
             </div>
           </div>
         </div>
@@ -599,7 +599,7 @@
               <h2 class="h4 mb-1">Manage Users</h2>
               <p class="text-secondary mb-0">Create login credentials for staff and additional admins from this device.</p>
             </div>
-            <div class="small text-secondary admin-view-note">Local account management only</div>
+            <div class="small text-secondary admin-view-note">Cloud-synced account management</div>
           </header>
 
           <section class="row g-3">
