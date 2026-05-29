@@ -771,6 +771,7 @@ if (logoutBtn) {
 });
 if (userManagementForm) {
   userManagementForm.addEventListener('submit', (event) => {
+    console.log("SUBMIT FIRED");
     event.preventDefault();
     hideUserManagementMessage();
 
@@ -800,32 +801,42 @@ if (userManagementForm) {
 
     const submitBtn = userManagementForm.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
+  
+  console.log("ABOUT TO FETCH USERS");
+  
+  fetch(`${AMZN_LAMBDA_URL}users`, {  
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  
+  .then(response => {
+    if (!response.ok) throw new Error('Cloud persistence operation rejected.');
+    return response.json();
+})
+  .then(persistedUser => {
+  appUsers.unshift(persistedUser);
+  persistUsers();
+  renderAdminPage();
 
-    fetch(AMZN_LAMBDA_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
-    .then(response => {
-      if (!response.ok) throw new Error('Cloud persistence operation rejected.');
-      return response.json();
-    })
-    .then(persistedUser => {
-      appUsers.unshift(persistedUser);
-      persistUsers();
-      renderAdminPage();
+  const createdRole = adminRoleSelect.value === 'Admin' ? 'admin' : 'staff';
+  showUserManagementMessage(
+    'success',
+    `Created ${createdRole} account for ${adminNameInput.value.trim()}.`
+  );
 
-      const createdRole = adminRoleSelect.value === 'Admin' ? 'admin' : 'staff';
-      showUserManagementMessage('success', `Created ${createdRole} account for ${adminNameInput.value.trim()}.`);
-      
-      userManagementForm.reset();
-      userManagementForm.classList.remove('was-validated');
-      adminRoleSelect.value = 'Staff';
-    })
+  userManagementForm.reset();
+  userManagementForm.classList.remove('was-validated');
+  adminRoleSelect.value = 'Staff';
+})
+
     .catch(err => {
       console.error('Cloud Synchronization Error:', err);
-      showUserManagementMessage('danger', 'Database connection offline. Account could not be provisioned.');
-    })
+      showUserManagementMessage(
+      'danger',
+      'Database connection offline. Account could not be provisioned.'
+  );
+})
     .finally(() => {
       if (submitBtn) submitBtn.disabled = false;
     });
@@ -1643,7 +1654,7 @@ newAppointmentForm.addEventListener('submit', (event) => {
   const submitBtn = newAppointmentForm.querySelector('button[type="submit"]');
   if (submitBtn) submitBtn.disabled = true;
 
-  fetch(AMZN_LAMBDA_URL, {
+  fetch(`${AMZN_LAMBDA_URL}appointments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
