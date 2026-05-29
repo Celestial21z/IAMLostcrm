@@ -80,21 +80,30 @@ export const handler = async (event) => {
         console.log("USER POST BODY:", body);
 
         if (body.action === "updateUser") {
-          const { userId, updates } = body;
-          if (!userId || !updates || typeof updates !== "object") {
-            return buildResponse(400, { error: "Missing userId or updates for updateUser action." });
+          const { userId, email, updates } = body;
+          if ((!userId && !email) || !updates || typeof updates !== "object") {
+            return buildResponse(400, { error: "Missing userId/email or updates for updateUser action." });
           }
+
+          const filterParts = [];
+          const exprNames = { "#idAttr": "id", "#emailAttr": "email" };
+          const exprValues = {};
+
+          if (userId) {
+            filterParts.push("#idAttr = :idVal");
+            exprValues[":idVal"] = userId;
+          }
+          if (email) {
+            filterParts.push("#emailAttr = :emailVal");
+            exprValues[":emailVal"] = email;
+          }
+
           const scanResult = await docClient.send(
             new ScanCommand({
               TableName: USERS_TABLE,
-              FilterExpression: "#idAttr = :userId OR #emailAttr = :userId",
-              ExpressionAttributeNames: {
-                "#idAttr": "id",
-                "#emailAttr": "email"
-              },
-              ExpressionAttributeValues: {
-                ":userId": userId
-              }
+              FilterExpression: filterParts.join(' OR '),
+              ExpressionAttributeNames: exprNames,
+              ExpressionAttributeValues: exprValues
             })
           );
 

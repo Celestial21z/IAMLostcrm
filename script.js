@@ -114,12 +114,15 @@ async function createUserInCloud(user) {
 }
 
 async function updateUserInCloud(userId, updates) {
-  const responseBody = await sendCloudRequest('users', 'POST', { action: 'updateUser', userId, updates }, CLOUD_USER_PATH);
+  const localUser = findUserById(userId) || {};
+  const payload = { action: 'updateUser', userId, email: localUser.email, updates };
+  console.log('[Auth] updateUserInCloud payload:', payload);
+  const responseBody = await sendCloudRequest('users', 'POST', payload, CLOUD_USER_PATH);
   return normalizeStoredUser(responseBody);
 }
 
 function normalizeStoredUser(user) {
-  if (!user || !user.id || !user.email || !user.password) {
+  if (!user || !user.id || !user.email) {
     return null;
   }
 
@@ -127,7 +130,7 @@ function normalizeStoredUser(user) {
     id: String(user.id),
     name: String(user.name || user.email).trim(),
     email: normalizeEmail(String(user.email)),
-    password: String(user.password),
+    password: String(user.password || ''),
     role: user.role === 'Admin' ? 'Admin' : 'Staff',
     active: user.active !== false,
     createdAt: user.createdAt || new Date().toISOString(),
